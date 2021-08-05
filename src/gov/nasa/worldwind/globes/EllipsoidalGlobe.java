@@ -33,7 +33,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
     protected final double es;
     private final Vec4 center;
     private ElevationModel elevationModel;
-    private RectangularTessellator tessellator;
+    private IcoSphereTessellator tessellator;
     protected EGM96 egm96;
 
     /**
@@ -52,7 +52,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         this.es = es; // assume it's consistent with the two radii
         this.center = Vec4.ZERO;
         this.elevationModel = em;
-        this.tessellator = new RectangularTessellator();
+        this.tessellator = new IcoSphereTessellator();
     }
 
     /**
@@ -72,13 +72,13 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         this.es = es; // assume it's consistent with the two radii
         this.center = center;
         this.elevationModel = em;
-        this.tessellator =  new RectangularTessellator();
+        this.tessellator =  new IcoSphereTessellator();
     }
 
     protected class StateKey implements GlobeStateKey
     {
         protected Globe globe;
-        protected final RectangularTessellator tessellator;
+        protected final IcoSphereTessellator tessellator;
         protected double verticalExaggeration;
         protected ElevationModel elevationModel;
 
@@ -93,8 +93,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
 
             this.globe = dc.getGlobe();
            
-            this.tessellator = new RectangularTessellator();
-             tessellator.setGlobe(globe);
+            this.tessellator = new IcoSphereTessellator();
             this.verticalExaggeration = dc.getVerticalExaggeration();
             this.elevationModel = this.globe.getElevationModel();
         }
@@ -102,7 +101,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         public StateKey(Globe globe)
         {
             this.globe = globe;
-            this.tessellator = new RectangularTessellator();
+            this.tessellator = new IcoSphereTessellator();
             this.verticalExaggeration = 1;
             this.elevationModel = this.globe.getElevationModel();
         }
@@ -165,12 +164,12 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         return new StateKey(this);
     }
 
-    public RectangularTessellator getTessellator()
+    public IcoSphereTessellator getTessellator()
     {
         return tessellator;
     }
 
-    public void setTessellator(RectangularTessellator tessellator)
+    public void setTessellator(IcoSphereTessellator tessellator)
     {
         this.tessellator = tessellator;
     }
@@ -1298,8 +1297,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
     {
         if (this.tessellator == null)
         {
-            this.tessellator = new RectangularTessellator();
-            tessellator.setGlobe(dc.getGlobe());
+            this.tessellator = new IcoSphereTessellator();
 
             if (this.tessellator == null)
             {

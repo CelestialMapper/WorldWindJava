@@ -503,14 +503,14 @@ public interface Globe extends WWObject, Extent
      *
      * @return the globe's current tessellator.
      */
-    RectangularTessellator getTessellator();
+    IcoSphereTessellator getTessellator();
 
     /**
      * Specifies this globe's tessellator.
      *
      * @param tessellator the new tessellator. Specify null to use the default tessellator.
      */
-    void setTessellator(RectangularTessellator tessellator);
+    void setTessellator(IcoSphereTessellator tessellator);
 
     /**
      * Tessellate this globe for the currently visible region.
