@@ -28,8 +28,13 @@ import gov.nasa.worldwind.globes.ElevationModel;
 import gov.nasa.worldwind.pick.PickedObject;
 import gov.nasa.worldwind.util.Logging;
 import java.awt.Point;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 {
@@ -382,6 +387,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         @Override
         public void beginRendering(DrawContext dc, int numTextureUnits)
         {
+
         }
 
         @Override
@@ -421,13 +427,11 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         @Override
         public void renderMultiTexture(DrawContext dc, int numTextureUnits, boolean beginRenderingCalled)
         {
-            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
         }
 
         @Override
         public void render(DrawContext dc, boolean beginRenderingCalled)
         {
-            this.render(dc);
         }
 
         private static class RenderInfo
@@ -437,6 +441,8 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             //            private int[] bufferIds = new int[2];
             private DoubleBuffer vertices;
             private final DoubleBuffer texCoords;
+            protected Object vboCacheKey = new Object();
+            protected boolean isVboBound = false;
 
             private RenderInfo(int density, DoubleBuffer vertices, DoubleBuffer texCoords)
             {
@@ -469,6 +475,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             return ri;
         }
 
+        
         private RenderInfo buildVerts(DrawContext dc, int resolution)
         {
             // Density is intended to approximate closely the tessellation's number of intervals along a side.
@@ -553,7 +560,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public void render(DrawContext dc)
         {
             // TODO: Validate args
-            this.render(dc, this.density, 1);
+            // this.render(dc, this.density, 1);
         }
 
         private long render(DrawContext dc, int density, int numTextureUnits)
@@ -572,7 +579,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             GL2 gl = dc.getGL().getGL2();
             gl.glPushClientAttrib(GL2.GL_CLIENT_VERTEX_ARRAY_BIT);
             gl.glEnableClientState(GL2.GL_VERTEX_ARRAY);
-            gl.glVertexPointer(3, GL.GL_FLOAT, 0, ri.vertices.rewind());
+            gl.glVertexPointer(3, GL2.GL_DOUBLE, 0, ri.vertices.rewind());
 
             for (int i = 0; i < numTextureUnits; i++)
             {
@@ -582,13 +589,13 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
                 gl.glClientActiveTexture(GL2.GL_TEXTURE0 + i);
                 gl.glEnableClientState(GL2.GL_TEXTURE_COORD_ARRAY);
-                gl.glTexCoordPointer(2, GL.GL_FLOAT, 0, ((DoubleBuffer) ri.texCoords).rewind());
+                gl.glTexCoordPointer(2, GL2.GL_DOUBLE, 0, ri.texCoords.rewind());
             }
 
 //            gl.glDrawElements(javax.media.opengl.GL.GL_TRIANGLE_STRIP, indices.limit(),
 //                    javax.media.opengl.GL.GL_UNSIGNED_INT, indices.rewind());
-            gl.glDrawElements(GL.GL_TRIANGLE_STRIP, indices.limit(),
-                    GL.GL_UNSIGNED_INT, indices.rewind());
+            gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, indices.limit(),
+                    GL2.GL_UNSIGNED_INT, indices.rewind());
 
             gl.glPopClientAttrib();
 
@@ -608,7 +615,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             GL2 gl = dc.getGL().getGL2();
             // TODO: Could be overdoing the attrib push here. Check that all needed and perhaps save/retore instead.
             gl.glPushAttrib(
-                    GL.GL_DEPTH_BUFFER_BIT | GL2.GL_POLYGON_BIT | GL2.GL_TEXTURE_BIT | GL2.GL_ENABLE_BIT | GL2.GL_CURRENT_BIT);
+                    GL2.GL_DEPTH_BUFFER_BIT | GL2.GL_POLYGON_BIT | GL2.GL_TEXTURE_BIT | GL2.GL_ENABLE_BIT | GL2.GL_CURRENT_BIT);
             gl.glEnable(GL2.GL_BLEND);
             gl.glBlendFunc(GL2.GL_SRC_ALPHA, GL2.GL_ONE);
             gl.glDisable(GL2.GL_DEPTH_TEST);
@@ -881,6 +888,37 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         return topLevels;
     }
 
+    private void printTopLevels(ArrayList<IcosaTile> tops)
+    {
+        if (tops.size() < 1)
+        {
+            return;
+        }
+
+        File fileToSave = new File("icosatile_output");
+        try ( PrintWriter writer = new PrintWriter(fileToSave))
+        {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < tops.size(); i++)
+            {
+                sb.append(i).append(":");
+                sb.append("\n");
+                sb.append("Lat min: ").append(tops.get(i).sector.getMinLatitude()).append(" Lat max: ").append(tops.get(i).sector.getMaxLatitude());
+                sb.append("\n");
+                sb.append("Lon min: ").append(tops.get(i).sector.getMinLongitude()).append(" Lon max: ").append(tops.get(i).sector.getMaxLongitude());
+                sb.append("\n");
+                sb.append("\n");
+            }
+
+            writer.write(sb.toString());
+
+            System.out.println("File has been exported");
+        } catch (FileNotFoundException ex)
+        {
+            Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+
     @SuppressWarnings(
             {
                 "FieldCanBeLocal"
@@ -942,7 +980,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         this.currentCoverage = null;
 
         this.currentFrustum = view.getFrustumInModelCoordinates();
-        
+
         this.setGlobe(globe);
 
         for (IcosaTile tile : topLevels)
@@ -953,25 +991,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         dc.setVisibleSector(this.getSector());
 
         return this.currentTiles;
-
-//        TopLevelTiles topLevels = (TopLevelTiles) this.topLevelTilesCache.get(dc.getGlobe().getStateKey(dc));
-//
-//        if (topLevels == null)
-//        {
-//            topLevels = new TopLevelTiles(this.makeLevelZeroEquilateralTriangles(this.globeInfo));
-//            this.topLevelTilesCache.put(dc.getGlobe().getStateKey(dc), topLevels);
-//        }
-//
-//         this.currentTiles.setSector(this.currentCoverage);
-//         
-//        for (IcosaTile tile : topLevels.topLevels)
-//        {
-//            this.selectVisibleTiles(tile, view);
-//        }
-//
-//        dc.setVisibleSector(this.getSector());
-//
-//        return this.currentTiles;
     }
 
     private boolean needToSplit(IcosaTile tile, View view)
@@ -1032,11 +1051,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         this.currentCoverage = tile.getSector().union(this.currentCoverage);
         this.currentTiles.add(tile);
     }
-
-//    protected IcoSphereTessellator.CacheKey createCacheKey(DrawContext dc, IcosaTile tile)
-//    {
-//        return new CacheKey(dc, tile.density, tile.);
-//    }
 
     private static class CacheKey
     {
