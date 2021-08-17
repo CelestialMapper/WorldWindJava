@@ -31,7 +31,9 @@ import java.awt.Point;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.PrintWriter;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -49,6 +51,8 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
     protected static final String CACHE_NAME = "Terrain";
     protected static final String CACHE_ID = IcoSphereTessellator.class.getName();
+    
+    protected static final HashMap<Integer, FloatBuffer> textureCoords = new HashMap<Integer, FloatBuffer>();
 
     private static class GlobeInfo
     {
@@ -76,10 +80,8 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     private static class IcosaTile implements SectorGeometry
     {
 
-        private static java.util.HashMap<Integer, double[]> parameterizations
-                = new java.util.HashMap<Integer, double[]>();
-        private static java.util.HashMap<Integer, java.nio.IntBuffer> indexLists
-                = new java.util.HashMap<Integer, java.nio.IntBuffer>();
+        private static java.util.HashMap<Integer, double[]> parameterizations = new java.util.HashMap<Integer, double[]>();
+        private static java.util.HashMap<Integer, java.nio.IntBuffer> indexLists = new java.util.HashMap<Integer, java.nio.IntBuffer>();
 
         protected static double[] getParameterization(int density)
         {
@@ -475,7 +477,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             return ri;
         }
 
-        
         private RenderInfo buildVerts(DrawContext dc, int resolution)
         {
             // Density is intended to approximate closely the tessellation's number of intervals along a side.
@@ -570,12 +571,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             indices.rewind();
 
             dc.getView().pushReferenceCenter(dc, this.pCentroid);
-
-//            GL gl = dc.getGL();
-//            gl.glPushClientAttrib(GL.GL_CLIENT_VERTEX_ARRAY_BIT);
-//            gl.glEnableClientState(GL.GL_VERTEX_ARRAY);
-//            gl.glVertexPointer(3, GL.GL_DOUBLE, 0, ri.vertices.rewind());
-            // Use GL2 instead of GL
+            
             GL2 gl = dc.getGL().getGL2();
             gl.glPushClientAttrib(GL2.GL_CLIENT_VERTEX_ARRAY_BIT);
             gl.glEnableClientState(GL2.GL_VERTEX_ARRAY);
@@ -583,17 +579,12 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
             for (int i = 0; i < numTextureUnits; i++)
             {
-//                gl.glClientActiveTexture(GL.GL_TEXTURE0 + i);
-//                gl.glEnableClientState(GL.GL_TEXTURE_COORD_ARRAY);
-//                gl.glTexCoordPointer(2, GL.GL_DOUBLE, 0, ri.texCoords.rewind());
-
+                
                 gl.glClientActiveTexture(GL2.GL_TEXTURE0 + i);
                 gl.glEnableClientState(GL2.GL_TEXTURE_COORD_ARRAY);
                 gl.glTexCoordPointer(2, GL2.GL_DOUBLE, 0, ri.texCoords.rewind());
             }
-
-//            gl.glDrawElements(javax.media.opengl.GL.GL_TRIANGLE_STRIP, indices.limit(),
-//                    javax.media.opengl.GL.GL_UNSIGNED_INT, indices.rewind());
+            
             gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, indices.limit(),
                     GL2.GL_UNSIGNED_INT, indices.rewind());
 
@@ -974,6 +965,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             WorldWind.getMemoryCacheSet().addCache(CACHE_ID, cache);
         }
 
+        //createTextureCoordinates(this.density);
         this.currentTiles.clear();
         this.currentLevel = 0;
         this.sector = null;
@@ -1170,5 +1162,86 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         topLevels.add(createTileFromAngles(globeInfo, 0, L0[26], L0[25], L0[31]));
 
         return topLevels;
+    }
+
+    protected static void createTextureCoordinates(int density)
+    {
+        if (density < 1)
+        {
+            density = 1;
+        }
+
+        if (textureCoords.containsKey(density))
+        {
+            return;
+        }
+
+        // Approximate 1 to avoid shearing off of right and top skirts in SurfaceTileRenderer.
+        // TODO: dig into this more: why are the skirts being sheared off?
+        final float one = 0.999999f;
+
+        int coordCount = (density + 3) * (density + 3);
+        FloatBuffer p = Buffers.newDirectFloatBuffer(2 * coordCount);
+        double delta = 1d / density;
+        int k = 2 * (density + 3);
+        for (int j = 0; j < density; j++)
+        {
+            double v = j * delta;
+
+            // skirt column; duplicate first column
+            p.put(k++, 0f);
+            p.put(k++, (float) v);
+
+            // interior columns
+            for (int i = 0; i < density; i++)
+            {
+                p.put(k++, (float) (i * delta)); // u
+                p.put(k++, (float) v);
+            }
+
+            // last interior column; force u to 1.
+            p.put(k++, one);//1d);
+            p.put(k++, (float) v);
+
+            // skirt column; duplicate previous column
+            p.put(k++, one);//1d);
+            p.put(k++, (float) v);
+        }
+
+        // Last interior row
+        //noinspection UnnecessaryLocalVariable
+        float v = one;//1d;
+        p.put(k++, 0f); // skirt column
+        p.put(k++, v);
+
+        for (int i = 0; i < density; i++)
+        {
+            p.put(k++, (float) (i * delta)); // u
+            p.put(k++, v);
+        }
+        p.put(k++, one);//1d); // last interior column
+        p.put(k++, v);
+
+        p.put(k++, one);//1d); // skirt column
+        p.put(k++, v);
+
+        // last skirt row
+        int kk = k - 2 * (density + 3);
+        for (int i = 0; i < density + 3; i++)
+        {
+            p.put(k++, p.get(kk++));
+            p.put(k++, p.get(kk++));
+        }
+
+        // first skirt row
+        k = 0;
+        kk = 2 * (density + 3);
+        for (int i = 0; i < density + 3; i++)
+        {
+            p.put(k++, p.get(kk++));
+            p.put(k++, p.get(kk++));
+        }
+
+        textureCoords.put(density, p);
     }
 }
