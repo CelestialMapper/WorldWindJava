@@ -43,7 +43,7 @@ import java.util.List;
  * @version $Id: EllipsoidIcosahedralTessellator.java 5377 2008-05-28 20:28:48Z
  * tgaskins $
  */
-public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
+public class EllipsoidIcosahedralTessellator //extends WWObjectImpl implements Tessellator
 {
 
     // TODO: This class works as of 3/15/07 but it is not complete. There is a problem with texture coordinate
@@ -360,25 +360,13 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         @Override
         public void beginRendering(DrawContext dc, int numTextureUnits)
         {
-            dc.getView().setReferenceCenter(dc, this.pCentroid);
-            if (dc.getGLRuntimeCapabilities().isUseVertexBufferObject())
-            {
-                if (this.bindVbos(dc, this, numTextureUnits))
-                {
-                    this.ri.isVboBound = true;
-                }
-            }
+            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
         }
 
         @Override
         public void endRendering(DrawContext dc)
         {
-            if (this.ri.isVboBound)
-            {
-                dc.getGL().glBindBuffer(GL.GL_ARRAY_BUFFER, 0);
-                dc.getGL().glBindBuffer(GL.GL_ELEMENT_ARRAY_BUFFER, 0);
-                this.ri.isVboBound = false;
-            }
+            throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
         }
 
         @Override
@@ -412,7 +400,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         }
 
         @Override
-        public DoubleBuffer makeTextureCoordinates(SectorGeometry.GeographicTextureCoordinateComputer computer)
+        public DoubleBuffer makeTextureCoordinates(GeographicTextureCoordinateComputer computer)
         {
             throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
         }
@@ -1072,7 +1060,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     private int density = DEFAULT_DENSITY; // TODO: make configurable
     private boolean makeTileSkirts = true;
 
-    public IcoSphereTessellator()
+    public EllipsoidIcosahedralTessellator()
     {
     }
 
@@ -1098,7 +1086,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     public SectorGeometryList tessellate(DrawContext dc)
     {
         View view = dc.getView();
-        this.globe = dc.getGlobe();
 
         if (!WorldWind.getMemoryCacheSet().containsCache(CacheKey.class.getName()))
         {

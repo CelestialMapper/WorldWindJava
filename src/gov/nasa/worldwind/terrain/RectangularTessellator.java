@@ -344,7 +344,7 @@ public class RectangularTessellator extends WWObjectImpl implements Tessellator
         {
             return this.tessellator.makeGeographicTexCoords(this, computer);
         }
-    }
+    } // End RectTile
 
     protected static class CacheKey
     {
