@@ -262,7 +262,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 //            double ny = 2 * this.pCentroid.y() * this.globeInfo.invCsq;
 //            double nz = 2 * this.pCentroid.z() * this.globeInfo.invAsq;
 //            this.normal = new Vector(nx, ny, nz).normalize();
-            //this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector());
+            //this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector()); // original
             this.extent = Sector.computeBoundingCylinder(globeInfo.globe, 1d, this.getSector());
 
             this.edgeLength = this.globeInfo.level0EdgeLength / Math.pow(2, this.level);
@@ -358,34 +358,10 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         {
             return this.extent;
         }
-//
-//        private Point getPoint(double u, double v)
-//        {
-//            Point pu = this.unitp1;
-//            Point pv = this.unitp2;
-//            Point pw = this.unitp0;
-//
-//            double w = 1d - u - v;
-//
-//            double x = u * pu.x() + v * pv.x() + w * pw.x();
-//            double y = u * pu.y() + v * pv.y() + w * pw.y();
-//            double z = u * pu.z() + v * pv.z() + w * pw.z();
-//            double f = x * x * this.globeInfo.invAsq + y * y * this.globeInfo.invAsq + z * z * this.globeInfo.invCsq;
-//            f = 1 / Math.sqrt(f);
-//
-//            return new Point(x * f, y * f, z * f);
-//        }
-//
-//        private Point computePoint(Angle lat, Angle lon)
-//        {
-//            double u = (lat.getRadians() - this.g0.getLatitude().getRadians())
-//                / (this.g1.getLatitude().getRadians() - this.g0.getLatitude().getRadians());
-//            double v = (lat.getRadians() - this.g0.getLatitude().getRadians())
-//                / (this.g1.getLatitude().getRadians() - this.g0.getLatitude().getRadians());
-//
-//            return null;
-//        }
 
+        // Functions not implemented - everything is done in render()
+        // This resulted in having these functions commented out in SectorGeometryList - which works with the
+        // Tessellator class to tessellate the globe
         @Override
         public void beginRendering(DrawContext dc, int numTextureUnits)
         {
@@ -438,9 +414,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
         private static class RenderInfo
         {
-
             private final int density;
-            //            private int[] bufferIds = new int[2];
             private DoubleBuffer vertices;
             private final DoubleBuffer texCoords;
             protected Object vboCacheKey = new Object();
@@ -483,14 +457,9 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             double[] params = getParameterization(density); // Parameterization is independent of tile location.
             int numVertexCoords = params.length + params.length / 2;
             int numPositionCoords = params.length;
-            // DoubleBuffer verts = BufferUtil.newDoubleBuffer(numVertexCoords);
             DoubleBuffer verts = Buffers.newDirectDoubleBuffer(numVertexCoords);
-            // DoubleBuffer positions = BufferUtil.newDoubleBuffer(numPositionCoords);
             DoubleBuffer positions = Buffers.newDirectDoubleBuffer(numPositionCoords);
-
-            // Determine the elevation model's target resolution.
-//            ElevationModel.Elevations elevations = dc.getGlobe().getElevationModel().getElevations(this.getSector(),
-//                resolution);
+            
             Vec4 pu = this.unitp1; // unit vectors at triangle vertices at sphere surface
             Vec4 pv = this.unitp2;
             Vec4 pw = this.unitp0;
@@ -564,6 +533,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             // this.render(dc, this.density, 1);
         }
 
+        // Renders the globe
         private long render(DrawContext dc, int density, int numTextureUnits)
         {
             RenderInfo ri = this.makeVerts(dc, density);
@@ -579,12 +549,13 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
             for (int i = 0; i < numTextureUnits; i++)
             {
-                
                 gl.glClientActiveTexture(GL2.GL_TEXTURE0 + i);
                 gl.glEnableClientState(GL2.GL_TEXTURE_COORD_ARRAY);
+                // Pointer to texture coordinates
                 gl.glTexCoordPointer(2, GL2.GL_DOUBLE, 0, ri.texCoords.rewind());
             }
             
+            // This is what actually draws the globe on the screen - using the indices
             gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, indices.limit(),
                     GL2.GL_UNSIGNED_INT, indices.rewind());
 
@@ -666,11 +637,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public void pick(DrawContext dc, Point pickPoint)
         {
         }
-
-//        public PickedObject[] pick(DrawContext dc, <Point> pickPoints)
-//        {
-//            return null;
-//        }
+        
         public long getSizeInBytes()
         {
             return this.byteSize;
@@ -909,16 +876,8 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
-
-    @SuppressWarnings(
-            {
-                "FieldCanBeLocal"
-            })
+    
     private Globe globe;
-    @SuppressWarnings(
-            {
-                "FieldCanBeLocal"
-            })
     private GlobeInfo globeInfo;
     private java.util.ArrayList<IcosaTile> topLevels;
     private SectorGeometryList currentTiles = new SectorGeometryList();
@@ -965,7 +924,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             WorldWind.getMemoryCacheSet().addCache(CACHE_ID, cache);
         }
 
-        //createTextureCoordinates(this.density);
+        
         this.currentTiles.clear();
         this.currentLevel = 0;
         this.sector = null;
@@ -982,6 +941,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
         dc.setVisibleSector(this.getSector());
 
+        printTopLevels(topLevels);
         return this.currentTiles;
     }
 
