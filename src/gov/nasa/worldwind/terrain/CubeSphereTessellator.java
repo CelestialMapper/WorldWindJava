@@ -47,7 +47,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         public final FloatBuffer vertices;
         protected final FloatBuffer texCoords;
         protected final IntBuffer indices;
-        protected final IntBuffer lineIndices;
         protected long time;
         protected Object vboCacheKey = new Object();
         protected boolean isVboBound = false;
@@ -67,7 +66,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
 
             //Fill in the remaining variables from the stored buffers and buffer IDs for easier access
             this.indices = indexLists.get(this.density);
-            this.lineIndices = indexLists.get(this.density);
             this.texCoords = textureCoords.get(this.density);
             this.time = System.currentTimeMillis();
 
@@ -831,11 +829,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
                 {
                     addIndices(k1, k2, k1 + 1, tile);
                     addIndices(k1 + 1, k2, k2 + 1, tile);
-//                    // lines: left and top
-                    tile.ri.lineIndices.put(k1);  // left
-                    tile.ri.lineIndices.put(k2);
-                    tile.ri.lineIndices.put(k1);  // top
-                    tile.ri.lineIndices.put(k1 + 1);
                 }
             }
         }
@@ -843,7 +836,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         int startIndex;                    // starting index for next face
         int vertexSize = (int) verts.size();      // vertex array size of +X face
         int indexSize = (int) tile.ri.indices.capacity();        // index array size of +X face
-        int lineIndexSize = (int) tile.ri.lineIndices.capacity(); // line index size of +X face
 
         // build -X face by negating x and z
         startIndex = verts.size() / 3;
@@ -856,14 +848,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         for (int i = 0; i < indexSize; ++i)
         {
             tile.ri.indices.put(startIndex + tile.ri.indices.get(i));
-        }
-        for (int i = 0; i < lineIndexSize; i += 4)
-        {
-            // left and bottom lines
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i));     // left
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1));
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1));  // bottom
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1) + 1);
         }
 
         // build +Y face by swapping x=>y, y=>-z, z=>-x
@@ -878,11 +862,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         {
             tile.ri.indices.put(startIndex + tile.ri.indices.get(i));
         }
-        for (int i = 0; i < lineIndexSize; ++i)
-        {
-            // top and left lines (same as +X)
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i));
-        }
 
         // build -Y face by swapping x=>-y, y=>z, z=>-x
         startIndex = verts.size() / 3;
@@ -895,14 +874,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         for (int i = 0; i < indexSize; ++i)
         {
             tile.ri.indices.put(startIndex + tile.ri.indices.get(i));
-        }
-        for (int i = 0; i < lineIndexSize; i += 4)
-        {
-            // top and right lines
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i));     // top
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 3));
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i) + 1);  // right
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1) + 1);
         }
 
         // build +Z face by swapping x=>z, z=>-x
@@ -917,12 +888,7 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         {
             tile.ri.indices.put(startIndex + tile.ri.indices.get(i));
         }
-        for (int i = 0; i < lineIndexSize; ++i)
-        {
-            // top and left lines (same as +X)
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i));
-        }
-
+        
         // build -Z face by swapping x=>-z, z=>x
         startIndex = verts.size() / 3;
         for (int i = 0, j = 0; i < vertexSize; i += 3, j += 2)
@@ -934,14 +900,6 @@ public class CubeSphereTessellator extends WWObjectImpl implements Tessellator
         for (int i = 0; i < indexSize; ++i)
         {
             tile.ri.indices.put(startIndex + tile.ri.indices.get(i));
-        }
-        for (int i = 0; i < lineIndexSize; i += 4)
-        {
-            // left and bottom lines
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i));     // left
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1));
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1));  // bottom
-            tile.ri.lineIndices.put(startIndex + tile.ri.lineIndices.get(i + 1) + 1);
         }
 
         return true;

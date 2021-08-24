@@ -51,7 +51,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
     protected static final String CACHE_NAME = "Terrain";
     protected static final String CACHE_ID = IcoSphereTessellator.class.getName();
-    
+
     protected static final HashMap<Integer, FloatBuffer> textureCoords = new HashMap<Integer, FloatBuffer>();
 
     private static class GlobeInfo
@@ -414,17 +414,19 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
         private static class RenderInfo
         {
+
             private final int density;
             private DoubleBuffer vertices;
-            private final DoubleBuffer texCoords;
+            private final FloatBuffer texCoords;
             protected Object vboCacheKey = new Object();
             protected boolean isVboBound = false;
 
             private RenderInfo(int density, DoubleBuffer vertices, DoubleBuffer texCoords)
             {
+                createTextureCoordinates(density);
                 this.density = density;
                 this.vertices = vertices;
-                this.texCoords = texCoords;
+                this.texCoords = textureCoords.get(density);
             }
 
             private long getSizeInBytes()
@@ -459,7 +461,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             int numPositionCoords = params.length;
             DoubleBuffer verts = Buffers.newDirectDoubleBuffer(numVertexCoords);
             DoubleBuffer positions = Buffers.newDirectDoubleBuffer(numPositionCoords);
-            
+
             Vec4 pu = this.unitp1; // unit vectors at triangle vertices at sphere surface
             Vec4 pv = this.unitp2;
             Vec4 pw = this.unitp0;
@@ -541,7 +543,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             indices.rewind();
 
             dc.getView().pushReferenceCenter(dc, this.pCentroid);
-            
+
             GL2 gl = dc.getGL().getGL2();
             gl.glPushClientAttrib(GL2.GL_CLIENT_VERTEX_ARRAY_BIT);
             gl.glEnableClientState(GL2.GL_VERTEX_ARRAY);
@@ -552,9 +554,9 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
                 gl.glClientActiveTexture(GL2.GL_TEXTURE0 + i);
                 gl.glEnableClientState(GL2.GL_TEXTURE_COORD_ARRAY);
                 // Pointer to texture coordinates
-                gl.glTexCoordPointer(2, GL2.GL_DOUBLE, 0, ri.texCoords.rewind());
+                gl.glTexCoordPointer(2, GL.GL_FLOAT, 0, ri.texCoords.rewind());
             }
-            
+
             // This is what actually draws the globe on the screen - using the indices
             gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, indices.limit(),
                     GL2.GL_UNSIGNED_INT, indices.rewind());
@@ -637,7 +639,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public void pick(DrawContext dc, Point pickPoint)
         {
         }
-        
+
         public long getSizeInBytes()
         {
             return this.byteSize;
@@ -876,7 +878,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
-    
+
     private Globe globe;
     private GlobeInfo globeInfo;
     private java.util.ArrayList<IcosaTile> topLevels;
@@ -924,7 +926,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             WorldWind.getMemoryCacheSet().addCache(CACHE_ID, cache);
         }
 
-        
         this.currentTiles.clear();
         this.currentLevel = 0;
         this.sector = null;
@@ -1124,82 +1125,23 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         return topLevels;
     }
 
+    // Attempt at creating texture coordinates (similar to getParamaterization)
     protected static void createTextureCoordinates(int density)
     {
-        if (density < 1)
-        {
-            density = 1;
-        }
-
-        if (textureCoords.containsKey(density))
-        {
-            return;
-        }
-
-        // Approximate 1 to avoid shearing off of right and top skirts in SurfaceTileRenderer.
-        // TODO: dig into this more: why are the skirts being sheared off?
-        final float one = 0.999999f;
-
-        int coordCount = (density + 3) * (density + 3);
+        int coordCount = (density * density + 3 * density + 2) / 2;
         FloatBuffer p = Buffers.newDirectFloatBuffer(2 * coordCount);
         double delta = 1d / density;
-        int k = 2 * (density + 3);
-        for (int j = 0; j < density; j++)
+        int k = 0;
+        for (int j = 0; j <= density; j++)
         {
             double v = j * delta;
-
-            // skirt column; duplicate first column
-            p.put(k++, 0f);
-            p.put(k++, (float) v);
-
-            // interior columns
-            for (int i = 0; i < density; i++)
+            for (int i = 0; i <= density - j; i++)
             {
-                p.put(k++, (float) (i * delta)); // u
+                //p[k++] = i * delta; // u
+                p.put(k++, (float) (i * delta));
                 p.put(k++, (float) v);
+                //p[k++] = v;
             }
-
-            // last interior column; force u to 1.
-            p.put(k++, one);//1d);
-            p.put(k++, (float) v);
-
-            // skirt column; duplicate previous column
-            p.put(k++, one);//1d);
-            p.put(k++, (float) v);
-        }
-
-        // Last interior row
-        //noinspection UnnecessaryLocalVariable
-        float v = one;//1d;
-        p.put(k++, 0f); // skirt column
-        p.put(k++, v);
-
-        for (int i = 0; i < density; i++)
-        {
-            p.put(k++, (float) (i * delta)); // u
-            p.put(k++, v);
-        }
-        p.put(k++, one);//1d); // last interior column
-        p.put(k++, v);
-
-        p.put(k++, one);//1d); // skirt column
-        p.put(k++, v);
-
-        // last skirt row
-        int kk = k - 2 * (density + 3);
-        for (int i = 0; i < density + 3; i++)
-        {
-            p.put(k++, p.get(kk++));
-            p.put(k++, p.get(kk++));
-        }
-
-        // first skirt row
-        k = 0;
-        kk = 2 * (density + 3);
-        for (int i = 0; i < density + 3; i++)
-        {
-            p.put(k++, p.get(kk++));
-            p.put(k++, p.get(kk++));
         }
 
         textureCoords.put(density, p);
