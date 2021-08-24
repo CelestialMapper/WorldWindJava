@@ -11,6 +11,7 @@ import com.jogamp.opengl.GL;
 import com.jogamp.opengl.GL2;
 import gov.nasa.worldwind.Configuration;
 import gov.nasa.worldwind.View;
+import gov.nasa.worldwind.WWObjectImpl;
 import gov.nasa.worldwind.WorldWind;
 import gov.nasa.worldwind.avlist.AVKey;
 import gov.nasa.worldwind.cache.BasicMemoryCache;
@@ -43,7 +44,7 @@ import java.util.List;
  * @version $Id: EllipsoidIcosahedralTessellator.java 5377 2008-05-28 20:28:48Z
  * tgaskins $
  */
-public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
+public class IcoSphereTessellator extends WWObjectImpl implements Tessellator
 {
 
     // TODO: This class works as of 3/15/07 but it is not complete. There is a problem with texture coordinate
@@ -53,6 +54,168 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     private static final int DEFAULT_MAX_LEVEL = 14;
     protected static final HashMap<Integer, Object> textureCoordVboCacheKeys = new HashMap<Integer, Object>();
     protected static final HashMap<Integer, Object> indexListsVboCacheKeys = new HashMap<Integer, Object>();
+    protected static final HashMap<Integer, DoubleBuffer> textureCoords = new HashMap<Integer, DoubleBuffer>();
+    protected static final HashMap<Integer, IntBuffer> indexLists = new HashMap<Integer, IntBuffer>();
+    protected static final String CACHE_NAME = "Terrain";
+    protected static final String CACHE_ID = IcoSphereTessellator.class.getName();
+    protected long updateFrequency = 2000; // milliseconds
+
+    public long getUpdateFrequency()
+    {
+        return this.updateFrequency;
+    }
+
+    public void setUpdateFrequency(long updateFrequency)
+    {
+        this.updateFrequency = updateFrequency;
+    }
+
+    private static class RenderInfo
+    {
+
+        private final int density;
+        //            private int[] bufferIds = new int[2];
+        private DoubleBuffer vertices;
+        protected final IntBuffer indices;
+        private final DoubleBuffer texCoords;
+        protected Object vboCacheKey = new Object();
+        protected boolean isVboBound = false;
+        protected long time;
+
+        private RenderInfo(DrawContext dc, int density, DoubleBuffer vertices, DoubleBuffer texCoords)
+        {
+            createIndices(density);
+            createTextureCoordinates(density);
+
+            this.density = density;
+            this.vertices = vertices;
+            this.indices = indexLists.get(this.density);
+            this.texCoords = textureCoords.get(this.density);
+            this.time = System.currentTimeMillis();
+
+            if (dc.getGLRuntimeCapabilities().isUseVertexBufferObject())
+            {
+                this.fillVerticesVBO(dc);
+            }
+        }
+
+        protected void fillVerticesVBO(DrawContext dc)
+        {
+            GL gl = dc.getGL();
+
+            int[] vboIds = (int[]) dc.getGpuResourceCache().get(this.vboCacheKey);
+            if (vboIds == null)
+            {
+                vboIds = new int[1];
+                gl.glGenBuffers(vboIds.length, vboIds, 0);
+                int size = this.vertices.limit() * 4;
+                dc.getGpuResourceCache().put(this.vboCacheKey, vboIds, GpuResourceCache.VBO_BUFFERS, size);
+            }
+
+            try
+            {
+                DoubleBuffer vb = this.vertices;
+                gl.glBindBuffer(GL.GL_ARRAY_BUFFER, vboIds[0]);
+                gl.glBufferData(GL.GL_ARRAY_BUFFER, vb.limit() * 4, vb.rewind(), GL.GL_STATIC_DRAW);
+            } finally
+            {
+                gl.glBindBuffer(GL.GL_ARRAY_BUFFER, 0);
+            }
+        }
+
+        private long getSizeInBytes()
+        {
+            return 12;// + this.vertices.limit() * 5 * Float.SIZE;
+        }
+    }
+
+    protected IcoSphereTessellator.CacheKey createCacheKey(DrawContext dc, IcosaTile tile)
+    {
+        return new CacheKey(tile, dc.getVerticalExaggeration(), tile.density);
+    }
+
+    public void makeVerts(DrawContext dc, IcosaTile tile)
+    {
+        MemoryCache cache = WorldWind.getMemoryCache(IcoSphereTessellator.class.getName());
+        CacheKey cacheKey = this.createCacheKey(dc, tile);
+        tile.ri = (RenderInfo) cache.getObject(cacheKey);
+        if (tile.ri != null && tile.ri.time >= System.currentTimeMillis() - this.getUpdateFrequency())
+        {
+            return;
+        }
+
+        if (this.buildVerts(dc, tile))
+        {
+            cache.add(cacheKey, tile.ri, tile.ri.getSizeInBytes());
+        }
+    }
+
+    private boolean buildVerts(DrawContext dc, IcosaTile tile)
+    {
+        // Density is intended to approximate closely the tessellation's number of intervals along a side.
+        double[] params = new double[1000]; // Parameterization is independent of tile location.
+        int numVertexCoords = params.length + params.length / 2;
+        int numPositionCoords = params.length;
+        DoubleBuffer verts = Buffers.newDirectDoubleBuffer(numVertexCoords);
+        DoubleBuffer positions = Buffers.newDirectDoubleBuffer(numPositionCoords);
+
+        Vec4 pu = tile.unitp1; // unit vectors at triangle vertices at sphere surface
+        Vec4 pv = tile.unitp2;
+        Vec4 pw = tile.unitp0;
+
+        int i = 0;
+        while (verts.hasRemaining())
+        {
+            double u = params[i++];
+            double v = params[i++];
+            double w = 1d - u - v;
+
+            // Compute point on triangle.
+            double x = u * pu.x + v * pv.x + w * pw.x;
+            double y = u * pu.y + v * pv.y + w * pw.y;
+            double z = u * pu.z + v * pv.z + w * pw.z;
+
+            // Compute latitude and longitude of the vector through point on triangle.
+            // Do this before applying ellipsoid eccentricity or elevation.
+            double lat = Math.atan2(y, Math.sqrt(x * x + z * z));
+            double lon = Math.atan2(x, z);
+
+            // Scale point to lie on the globe's mean ellilpsoid surface.
+            double f = 1d / Math.sqrt(
+                    x * x * this.globeInfo.invAsq + y * y * this.globeInfo.invCsq + z * z * this.globeInfo.invAsq);
+            x *= f;
+            y *= f;
+            z *= f;
+
+            Angle latParam = Angle.fromDegrees(lat);
+            Angle lonParam = Angle.fromDegrees(lon);
+
+            // Scale the point so that it lies at the given elevation.
+            double elevation = dc.getGlobe().getElevation(latParam, lonParam);
+            double nx = 2 * x * this.globeInfo.invAsq;
+            double ny = 2 * y * this.globeInfo.invCsq;
+            double nz = 2 * z * this.globeInfo.invAsq;
+            double scale = elevation * dc.getVerticalExaggeration() / Math.sqrt(nx * nx + ny * ny + nz * nz);
+            nx *= scale;
+            ny *= scale;
+            nz *= scale;
+            lat = Math.atan2(y, Math.sqrt(x * x + z * z));
+            lon = Math.atan2(x, z);
+            x += (nx - tile.pCentroid.x);
+            y += (ny - tile.pCentroid.y);
+            z += (nz - tile.pCentroid.z);
+
+            // Store point and position
+            verts.put(x).put(y).put(z);
+            positions.put(lon).put(lat);
+            // TODO: store normal as well
+        }
+
+        verts.rewind();
+
+        tile.ri = new RenderInfo(dc, density, verts, positions);
+        return true;
+    }
 
     private static class GlobeInfo
     {
@@ -98,80 +261,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         private long byteSize;
         static final double ROOT3_OVER4 = Math.sqrt(3) / 4d;
         protected RenderInfo ri;
-
-        protected static double[] getParameterization(int density)
-        {
-            double[] p = parameterizations.get(density);
-            if (p != null)
-            {
-                return p;
-            }
-
-            int coordCount = (density * density + 3 * density + 2) / 2;
-            p = new double[2 * coordCount];
-            double delta = 1d / density;
-            int k = 0;
-            for (int j = 0; j <= density; j++)
-            {
-                double v = j * delta;
-                for (int i = 0; i <= density - j; i++)
-                {
-                    p[k++] = i * delta; // u
-                    p[k++] = v;
-                }
-            }
-
-            parameterizations.put(density, p);
-
-            return p;
-        }
-
-        protected static java.nio.IntBuffer getIndices(int density)
-        {
-            java.nio.IntBuffer buffer = indexLists.get(density);
-            if (buffer != null)
-            {
-                return buffer;
-            }
-
-            int indexCount = density * density + 4 * density - 2;
-            buffer = Buffers.newDirectIntBuffer(indexCount);
-            int k = 0;
-            for (int i = 0; i < density; i++)
-            {
-                buffer.put(k);
-                if (i > 0)
-                {
-                    k = buffer.get(buffer.position() - 3);
-                    buffer.put(k);
-                    buffer.put(k);
-                }
-
-                if (i % 2 == 0) // even
-                {
-                    for (int j = 0; j < density - i; j++)
-                    {
-                        ++k;
-                        buffer.put(k);
-                        k += density - j;
-                        buffer.put(k);
-                    }
-                } else // odd
-                {
-                    for (int j = density - i - 1; j >= 0; j--)
-                    {
-                        k -= density - j;
-                        buffer.put(k);
-                        --k;
-                        buffer.put(k);
-                    }
-                }
-            }
-
-            indexLists.put(density, buffer);
-
-            return buffer;
-        }
 
         public static Vec4 getUnitPoint(double u, double v, Vec4 p0, Vec4 p1, Vec4 p2)
         {
@@ -427,138 +516,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public void render(DrawContext dc, boolean beginRenderingCalled)
         {
             throw new UnsupportedOperationException("Not supported yet."); //To change body of generated methods, choose Tools | Templates.
-        }
-
-        private static class RenderInfo
-        {
-
-            private final int density;
-            //            private int[] bufferIds = new int[2];
-            private DoubleBuffer vertices;
-            protected final IntBuffer indices;
-            private final DoubleBuffer texCoords;
-            protected Object vboCacheKey = new Object();
-            protected boolean isVboBound = false;
-
-            private RenderInfo(int density, DoubleBuffer vertices, DoubleBuffer texCoords)
-            {
-                this.density = density;
-                this.vertices = vertices;
-                this.texCoords = texCoords;
-
-                this.indices = indexLists.get(this.density);
-            }
-
-            protected void fillVerticesVBO(DrawContext dc)
-            {
-                GL gl = dc.getGL();
-
-                int[] vboIds = (int[]) dc.getGpuResourceCache().get(this.vboCacheKey);
-                if (vboIds == null)
-                {
-                    vboIds = new int[1];
-                    gl.glGenBuffers(vboIds.length, vboIds, 0);
-                    int size = this.vertices.limit() * 4;
-                    dc.getGpuResourceCache().put(this.vboCacheKey, vboIds, GpuResourceCache.VBO_BUFFERS, size);
-                }
-
-                try
-                {
-                    DoubleBuffer vb = this.vertices;
-                    gl.glBindBuffer(GL.GL_ARRAY_BUFFER, vboIds[0]);
-                    gl.glBufferData(GL.GL_ARRAY_BUFFER, vb.limit() * 4, vb.rewind(), GL.GL_STATIC_DRAW);
-                } finally
-                {
-                    gl.glBindBuffer(GL.GL_ARRAY_BUFFER, 0);
-                }
-            }
-
-            private long getSizeInBytes()
-            {
-                return 12;// + this.vertices.limit() * 5 * Float.SIZE;
-            }
-        }
-
-        private RenderInfo makeVerts(DrawContext dc, IcosaTile tile)
-        {
-            MemoryCache cache = WorldWind.getMemoryCache(IcosaTile.class.getName());
-            CacheKey key = new CacheKey(this, dc.getVerticalExaggeration(), density);
-            RenderInfo ri = (RenderInfo) cache.getObject(key);
-            if (ri != null)
-            {
-                return ri;
-            }
-
-            ri = this.buildVerts(dc, tile);
-            cache.add(key, ri, this.byteSize = ri.getSizeInBytes());
-
-            return ri;
-        }
-
-        private RenderInfo buildVerts(DrawContext dc, IcosaTile tile)
-        {
-            // Density is intended to approximate closely the tessellation's number of intervals along a side.
-            double[] params = getParameterization(density); // Parameterization is independent of tile location.
-            int numVertexCoords = params.length + params.length / 2;
-            int numPositionCoords = params.length;
-            DoubleBuffer verts = Buffers.newDirectDoubleBuffer(numVertexCoords);
-            DoubleBuffer positions = Buffers.newDirectDoubleBuffer(numPositionCoords);
-
-            Vec4 pu = this.unitp1; // unit vectors at triangle vertices at sphere surface
-            Vec4 pv = this.unitp2;
-            Vec4 pw = this.unitp0;
-
-            int i = 0;
-            while (verts.hasRemaining())
-            {
-                double u = params[i++];
-                double v = params[i++];
-                double w = 1d - u - v;
-
-                // Compute point on triangle.
-                double x = u * pu.x + v * pv.x + w * pw.x;
-                double y = u * pu.y + v * pv.y + w * pw.y;
-                double z = u * pu.z + v * pv.z + w * pw.z;
-
-                // Compute latitude and longitude of the vector through point on triangle.
-                // Do this before applying ellipsoid eccentricity or elevation.
-                double lat = Math.atan2(y, Math.sqrt(x * x + z * z));
-                double lon = Math.atan2(x, z);
-
-                // Scale point to lie on the globe's mean ellilpsoid surface.
-                double f = 1d / Math.sqrt(
-                        x * x * this.globeInfo.invAsq + y * y * this.globeInfo.invCsq + z * z * this.globeInfo.invAsq);
-                x *= f;
-                y *= f;
-                z *= f;
-
-                Angle latParam = Angle.fromDegrees(lat);
-                Angle lonParam = Angle.fromDegrees(lon);
-
-                // Scale the point so that it lies at the given elevation.
-                double elevation = dc.getGlobe().getElevation(latParam, lonParam);
-                double nx = 2 * x * this.globeInfo.invAsq;
-                double ny = 2 * y * this.globeInfo.invCsq;
-                double nz = 2 * z * this.globeInfo.invAsq;
-                double scale = elevation * dc.getVerticalExaggeration() / Math.sqrt(nx * nx + ny * ny + nz * nz);
-                nx *= scale;
-                ny *= scale;
-                nz *= scale;
-                lat = Math.atan2(y, Math.sqrt(x * x + z * z));
-                lon = Math.atan2(x, z);
-                x += (nx - this.pCentroid.x);
-                y += (ny - this.pCentroid.y);
-                z += (nz - this.pCentroid.z);
-
-                // Store point and position
-                verts.put(x).put(y).put(z);
-                positions.put(lon).put(lat);
-                // TODO: store normal as well
-            }
-
-            verts.rewind();
-
-            return new RenderInfo(density, verts, positions);
         }
 
         public void renderMultiTexture(DrawContext dc, int numTextureUnits)
@@ -1094,23 +1051,25 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     {
         return this.sector;
     }
+    protected Sector currentCoverage;
 
     public SectorGeometryList tessellate(DrawContext dc)
     {
         View view = dc.getView();
         this.globe = dc.getGlobe();
 
-        if (!WorldWind.getMemoryCacheSet().containsCache(CacheKey.class.getName()))
+        if (!WorldWind.getMemoryCacheSet().containsCache(CACHE_ID))
         {
             long size = Configuration.getLongValue(AVKey.SECTOR_GEOMETRY_CACHE_SIZE, 20000000L);
             MemoryCache cache = new BasicMemoryCache((long) (0.85 * size), size);
-            WorldWind.getMemoryCacheSet().addCache(CacheKey.class.getName(), cache);
+            WorldWind.getMemoryCacheSet().addCache(CACHE_ID, cache);
         }
 
         this.setGlobe(globe, dc);
         this.currentTiles.clear();
         this.currentLevel = 0;
         this.sector = null;
+        this.currentCoverage = null;
 
         this.currentFrustum = view.getFrustumInModelCoordinates();
 
@@ -1119,7 +1078,12 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             this.selectVisibleTiles(tile, view, dc);
         }
 
-        dc.setVisibleSector(this.getSector());
+        this.currentTiles.setSector(this.currentCoverage);
+
+        for (SectorGeometry tile : this.currentTiles)
+        {
+            this.makeVerts(dc, (IcosaTile) tile);
+        }
 
         return this.currentTiles;
     }
@@ -1245,5 +1209,66 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             result = 31 * result + density;
             return result;
         }
+    }
+
+    protected static void createIndices(int density)
+    {
+        java.nio.IntBuffer buffer = indexLists.get(density);
+        int indexCount = density * density + 4 * density - 2;
+        buffer = Buffers.newDirectIntBuffer(indexCount);
+        int k = 0;
+        for (int i = 0; i < density; i++)
+        {
+            buffer.put(k);
+            if (i > 0)
+            {
+                k = buffer.get(buffer.position() - 3);
+                buffer.put(k);
+                buffer.put(k);
+            }
+
+            if (i % 2 == 0) // even
+            {
+                for (int j = 0; j < density - i; j++)
+                {
+                    ++k;
+                    buffer.put(k);
+                    k += density - j;
+                    buffer.put(k);
+                }
+            } else // odd
+            {
+                for (int j = density - i - 1; j >= 0; j--)
+                {
+                    k -= density - j;
+                    buffer.put(k);
+                    --k;
+                    buffer.put(k);
+                }
+            }
+        }
+
+        indexLists.put(density, buffer);
+    }
+
+    protected static void createTextureCoordinates(int density)
+    {
+        int coordCount = (density * density + 3 * density + 2) / 2;
+        DoubleBuffer p = Buffers.newDirectDoubleBuffer(2 * coordCount);
+        double delta = 1d / density;
+        int k = 0;
+        for (int j = 0; j <= density; j++)
+        {
+            double v = j * delta;
+            for (int i = 0; i <= density - j; i++)
+            {
+                // p[k++] = i * delta; // u
+                p.put(k++, i * delta);
+                //p[k++] = v;
+                p.put(k++, v);
+            }
+        }
+
+        textureCoords.put(density, p);
     }
 }
