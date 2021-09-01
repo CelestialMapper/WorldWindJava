@@ -32,12 +32,21 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.PrintWriter;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Vector;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * @author Tom Gaskins
+ * @version $Id: EllipsoidIcosahedralTessellator.java 5377 2008-05-28 20:28:48Z
+ * tgaskins $
+ */
+// kjdickin - attempt at refactoring to work with CMS - https://git.haldean.org/droidcopter/blob/master/jars/worldwind/obsolete/EllipsoidIcosahedralTessellator.java
+// Globe is rendered, but texture coordinates are not being placed in the correct locations
 public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 {
 
@@ -48,12 +57,24 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
     private static final int DEFAULT_MAX_LEVEL = 14;
     protected SessionCache topLevelTilesCache = new BasicSessionCache(3);
     protected Sector currentCoverage;
+    private Globe globe;
+    private GlobeInfo globeInfo;
+    private java.util.ArrayList<IcosaTile> topLevels;
+    private SectorGeometryList currentTiles = new SectorGeometryList();
+    private Frustum currentFrustum;
+    private int currentLevel;
+    private int maxLevel = DEFAULT_MAX_LEVEL;//14; // TODO: Make configurable
+    private Sector sector; // union of all tiles selected during call to render()
+    private int density = DEFAULT_DENSITY; // TODO: make configurable
+    private boolean makeTileSkirts = true;
 
     protected static final String CACHE_NAME = "Terrain";
     protected static final String CACHE_ID = IcoSphereTessellator.class.getName();
 
     protected static final HashMap<Integer, FloatBuffer> textureCoords = new HashMap<Integer, FloatBuffer>();
+    protected static final HashMap<Integer, IntBuffer> indexLists = new HashMap<Integer, IntBuffer>();
 
+    // Stores properties for constructing the globe
     private static class GlobeInfo
     {
 
@@ -77,11 +98,144 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         }
     }
 
+    // Set the globe, this function is needed to create the tiles for tessellation
+    public void setGlobe(Globe globe)
+    {
+        if (globe == null)
+        {
+            String msg = Logging.getMessage("nullValue.GlobeIsNull");
+            Logging.logger().severe(msg);
+            throw new IllegalArgumentException(msg);
+        }
+
+        this.globe = globe;
+        this.globeInfo = new GlobeInfo(this.globe);
+        // Create the top level tiles
+        this.topLevels = makeLevelZeroEquilateralTriangles(this.globeInfo);
+    }
+
+    private static class RenderInfo
+    {
+
+        private final int density;
+        private DoubleBuffer vertices;
+        protected final IntBuffer indices;
+        private final FloatBuffer texCoords;
+        protected Object vboCacheKey = new Object();
+        protected boolean isVboBound = false;
+
+        private RenderInfo(int density, DoubleBuffer vertices)
+        {
+            createIndices(density);
+            createTextureCoordinates(density);
+
+            this.density = density;
+            this.vertices = vertices;
+            this.texCoords = textureCoords.get(density);
+            this.indices = indexLists.get(this.density);
+        }
+
+        private long getSizeInBytes()
+        {
+            return 12;// + this.vertices.limit() * 5 * Float.SIZE;
+        }
+    }
+
     private static class IcosaTile implements SectorGeometry
     {
 
         private static java.util.HashMap<Integer, double[]> parameterizations = new java.util.HashMap<Integer, double[]>();
-        private static java.util.HashMap<Integer, java.nio.IntBuffer> indexLists = new java.util.HashMap<Integer, java.nio.IntBuffer>();
+
+        protected final int level;
+        private final GlobeInfo globeInfo;
+        private final LatLon g0, g1, g2;
+        private Sector sector; // lazily evaluated
+        protected final Vec4 unitp0, unitp1, unitp2; // points on unit sphere
+        private final Vec4 p0;
+        private final Vec4 p1;
+        private final Vec4 p2;
+        private final Vec4 pCentroid;
+        private final Vec4 normal; // ellipsoids's normal vector at tile centroid
+        private final Cylinder extent; // extent of triangle in object coordinates
+        private final double edgeLength;
+        private int density = DEFAULT_DENSITY;
+        private long byteSize;
+        static final double ROOT3_OVER4 = Math.sqrt(3) / 4d;
+
+        public IcosaTile(GlobeInfo globeInfo, int level, Vec4 unitp0, Vec4 unitp1, Vec4 unitp2)
+        {
+            // TODO: Validate args
+            this.level = level;
+            this.globeInfo = globeInfo;
+
+            this.unitp0 = unitp0;
+            this.unitp1 = unitp1;
+            this.unitp2 = unitp2;
+
+            // Compute lat/lon at tile vertices.
+            Angle lat = Angle.fromRadians(Math.asin(this.unitp0.y));
+            Angle lon = Angle.fromRadians(Math.atan2(this.unitp0.x, this.unitp0.z));
+            this.g0 = new LatLon(lat, lon);
+            lat = Angle.fromRadians(Math.asin(this.unitp1.y));
+            lon = Angle.fromRadians(Math.atan2(this.unitp1.x, this.unitp1.z));
+            this.g1 = new LatLon(lat, lon);
+            lat = Angle.fromRadians(Math.asin(this.unitp2.y));
+            lon = Angle.fromRadians(Math.atan2(this.unitp2.x, this.unitp2.z));
+            this.g2 = new LatLon(lat, lon);
+
+            // Compute the triangle corner points on the ellipsoid at mean, max and min elevations.
+            this.p0 = this.scaleUnitPointToEllipse(this.unitp0, this.globeInfo.invAsq, this.globeInfo.invCsq);
+            this.p1 = this.scaleUnitPointToEllipse(this.unitp1, this.globeInfo.invAsq, this.globeInfo.invCsq);
+            this.p2 = this.scaleUnitPointToEllipse(this.unitp2, this.globeInfo.invAsq, this.globeInfo.invCsq);
+
+            double a = 1d / 3d;
+            Vec4 unitCentroid = getUnitPoint(a, a, this.unitp0, this.unitp1, this.unitp2);
+            this.pCentroid = this.scaleUnitPointToEllipse(unitCentroid, this.globeInfo.invAsq, this.globeInfo.invCsq);
+
+            // Compute the tile normal, which is the gradient of the ellipse at the centroid.
+            double nx = 2 * this.pCentroid.x() * this.globeInfo.invAsq;
+            double ny = 2 * this.pCentroid.y() * this.globeInfo.invCsq;
+            double nz = 2 * this.pCentroid.z() * this.globeInfo.invAsq;
+            this.normal = new Vec4(nx, ny, nz).normalize3();
+            // this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector()); // original
+            this.extent = Sector.computeBoundingCylinder(globeInfo.globe, 1d, this.getSector());
+
+            this.edgeLength = this.globeInfo.level0EdgeLength / Math.pow(2, this.level);
+        }
+
+        public IcosaTile(GlobeInfo globeInfo, int level, LatLon g0, LatLon g1, LatLon g2)
+        {
+            // TODO: Validate args
+            this.level = level;
+            this.globeInfo = globeInfo;
+
+            this.g0 = g0;
+            this.g1 = g1;
+            this.g2 = g2;
+
+            this.unitp0 = PolarPoint.toCartesian(this.g0.getLatitude(), this.g0.getLongitude(), 1);
+            this.unitp1 = PolarPoint.toCartesian(this.g1.getLatitude(), this.g1.getLongitude(), 1);
+            this.unitp2 = PolarPoint.toCartesian(this.g2.getLatitude(), this.g2.getLongitude(), 1);
+
+            // Compute the triangle corner points on the ellipsoid at mean, max and min elevations.
+            this.p0 = this.scaleUnitPointToEllipse(this.unitp0, this.globeInfo.invAsq, this.globeInfo.invCsq);
+            this.p1 = this.scaleUnitPointToEllipse(this.unitp1, this.globeInfo.invAsq, this.globeInfo.invCsq);
+            this.p2 = this.scaleUnitPointToEllipse(this.unitp2, this.globeInfo.invAsq, this.globeInfo.invCsq);
+
+            double a = 1d / 3d;
+            Vec4 unitCentroid = getUnitPoint(a, a, this.unitp0, this.unitp1, this.unitp2);
+            this.pCentroid = this.scaleUnitPointToEllipse(unitCentroid, this.globeInfo.invAsq, this.globeInfo.invCsq);
+
+            // Compute the tile normal, which is the gradient of the ellipse at the centroid.
+            double nx = 2 * this.pCentroid.x() * this.globeInfo.invAsq;
+            double ny = 2 * this.pCentroid.y() * this.globeInfo.invCsq;
+            double nz = 2 * this.pCentroid.z() * this.globeInfo.invAsq;
+            this.normal = new Vec4(nx, ny, nz).normalize3();
+            //this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector()); // original
+            this.extent = Sector.computeBoundingCylinder(globeInfo.globe, 1d, this.getSector());
+
+            this.edgeLength = this.globeInfo.level0EdgeLength / Math.pow(2, this.level);
+        }
 
         protected static double[] getParameterization(int density)
         {
@@ -174,98 +328,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
                     (p0.x + p1.x) / 2.0,
                     (p0.y + p1.y) / 2.0,
                     (p0.z + p1.z) / 2.0);
-        }
-
-        protected final int level;
-        private final GlobeInfo globeInfo;
-        private final LatLon g0, g1, g2;
-        private Sector sector; // lazily evaluated
-        protected final Vec4 unitp0, unitp1, unitp2; // points on unit sphere
-        private final Vec4 p0;
-        private final Vec4 p1;
-        private final Vec4 p2;
-        private final Vec4 pCentroid;
-        //        private final Vector normal; // ellipsoids's normal vector at tile centroid
-        private final Cylinder extent; // extent of triangle in object coordinates
-        private final double edgeLength;
-        private int density = DEFAULT_DENSITY;
-        private long byteSize;
-
-        static final double ROOT3_OVER4 = Math.sqrt(3) / 4d;
-
-        public IcosaTile(GlobeInfo globeInfo, int level, Vec4 unitp0, Vec4 unitp1, Vec4 unitp2)
-        {
-            // TODO: Validate args
-            this.level = level;
-            this.globeInfo = globeInfo;
-
-            this.unitp0 = unitp0;
-            this.unitp1 = unitp1;
-            this.unitp2 = unitp2;
-
-            // Compute lat/lon at tile vertices.
-            Angle lat = Angle.fromRadians(Math.asin(this.unitp0.y));
-            Angle lon = Angle.fromRadians(Math.atan2(this.unitp0.x, this.unitp0.z));
-            this.g0 = new LatLon(lat, lon);
-            lat = Angle.fromRadians(Math.asin(this.unitp1.y));
-            lon = Angle.fromRadians(Math.atan2(this.unitp1.x, this.unitp1.z));
-            this.g1 = new LatLon(lat, lon);
-            lat = Angle.fromRadians(Math.asin(this.unitp2.y));
-            lon = Angle.fromRadians(Math.atan2(this.unitp2.x, this.unitp2.z));
-            this.g2 = new LatLon(lat, lon);
-
-            // Compute the triangle corner points on the ellipsoid at mean, max and min elevations.
-            this.p0 = this.scaleUnitPointToEllipse(this.unitp0, this.globeInfo.invAsq, this.globeInfo.invCsq);
-            this.p1 = this.scaleUnitPointToEllipse(this.unitp1, this.globeInfo.invAsq, this.globeInfo.invCsq);
-            this.p2 = this.scaleUnitPointToEllipse(this.unitp2, this.globeInfo.invAsq, this.globeInfo.invCsq);
-
-            double a = 1d / 3d;
-            Vec4 unitCentroid = getUnitPoint(a, a, this.unitp0, this.unitp1, this.unitp2);
-            this.pCentroid = this.scaleUnitPointToEllipse(unitCentroid, this.globeInfo.invAsq, this.globeInfo.invCsq);
-
-//            // Compute the tile normal, which is the gradient of the ellipse at the centroid.
-//            double nx = 2 * this.pCentroid.x() * this.globeInfo.invAsq;
-//            double ny = 2 * this.pCentroid.y() * this.globeInfo.invCsq;
-//            double nz = 2 * this.pCentroid.z() * this.globeInfo.invAsq;
-//            this.normal = new Vector(nx, ny, nz).normalize();
-            // this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector()); // original
-            this.extent = Sector.computeBoundingCylinder(globeInfo.globe, 1d, this.getSector());
-
-            this.edgeLength = this.globeInfo.level0EdgeLength / Math.pow(2, this.level);
-        }
-
-        public IcosaTile(GlobeInfo globeInfo, int level, LatLon g0, LatLon g1, LatLon g2)
-        {
-            // TODO: Validate args
-            this.level = level;
-            this.globeInfo = globeInfo;
-
-            this.g0 = g0;
-            this.g1 = g1;
-            this.g2 = g2;
-
-            this.unitp0 = PolarPoint.toCartesian(this.g0.getLatitude(), this.g0.getLongitude(), 1);
-            this.unitp1 = PolarPoint.toCartesian(this.g1.getLatitude(), this.g1.getLongitude(), 1);
-            this.unitp2 = PolarPoint.toCartesian(this.g2.getLatitude(), this.g2.getLongitude(), 1);
-
-            // Compute the triangle corner points on the ellipsoid at mean, max and min elevations.
-            this.p0 = this.scaleUnitPointToEllipse(this.unitp0, this.globeInfo.invAsq, this.globeInfo.invCsq);
-            this.p1 = this.scaleUnitPointToEllipse(this.unitp1, this.globeInfo.invAsq, this.globeInfo.invCsq);
-            this.p2 = this.scaleUnitPointToEllipse(this.unitp2, this.globeInfo.invAsq, this.globeInfo.invCsq);
-
-            double a = 1d / 3d;
-            Vec4 unitCentroid = getUnitPoint(a, a, this.unitp0, this.unitp1, this.unitp2);
-            this.pCentroid = this.scaleUnitPointToEllipse(unitCentroid, this.globeInfo.invAsq, this.globeInfo.invCsq);
-
-//            // Compute the tile normal, which is the gradient of the ellipse at the centroid.
-//            double nx = 2 * this.pCentroid.x() * this.globeInfo.invAsq;
-//            double ny = 2 * this.pCentroid.y() * this.globeInfo.invCsq;
-//            double nz = 2 * this.pCentroid.z() * this.globeInfo.invAsq;
-//            this.normal = new Vector(nx, ny, nz).normalize();
-            //this.extent = globeInfo.globe.computeBoundingCylinder(1d, this.getSector()); // original
-            this.extent = Sector.computeBoundingCylinder(globeInfo.globe, 1d, this.getSector());
-
-            this.edgeLength = this.globeInfo.level0EdgeLength / Math.pow(2, this.level);
         }
 
         public Sector getSector()
@@ -412,29 +474,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         {
         }
 
-        private static class RenderInfo
-        {
-
-            private final int density;
-            private DoubleBuffer vertices;
-            private final FloatBuffer texCoords;
-            protected Object vboCacheKey = new Object();
-            protected boolean isVboBound = false;
-
-            private RenderInfo(int density, DoubleBuffer vertices, DoubleBuffer texCoords)
-            {
-                createTextureCoordinates(density);
-                this.density = density;
-                this.vertices = vertices;
-                this.texCoords = textureCoords.get(density);
-            }
-
-            private long getSizeInBytes()
-            {
-                return 12;// + this.vertices.limit() * 5 * Float.SIZE;
-            }
-        }
-
         private RenderInfo makeVerts(DrawContext dc, int density)
         {
             // int resolution = dc.getGlobe().getElevationModel().getTargetResolution(dc, this.getSector(), density);
@@ -512,13 +551,14 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
                 // Store point and position
                 verts.put(x).put(y).put(z);
-                positions.put(lon).put(lat);
+                //positions.put(lon).put(lat);
                 // TODO: store normal as well
+                this.normal.add3(x, y, z);
             }
 
             verts.rewind();
 
-            return new RenderInfo(density, verts, positions);
+            return new RenderInfo(density, verts);
         }
 
         @Override
@@ -532,15 +572,13 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public void render(DrawContext dc)
         {
             // TODO: Validate args
-            // this.render(dc, this.density, 1);
+            this.render(dc, this.density, 2);
         }
 
         // Renders the globe
         private long render(DrawContext dc, int density, int numTextureUnits)
         {
             RenderInfo ri = this.makeVerts(dc, density);
-            java.nio.IntBuffer indices = getIndices(ri.density);
-            indices.rewind();
 
             dc.getView().pushReferenceCenter(dc, this.pCentroid);
 
@@ -558,14 +596,13 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
             }
 
             // This is what actually draws the globe on the screen - using the indices
-            gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, indices.limit(),
-                    GL2.GL_UNSIGNED_INT, indices.rewind());
+            gl.glDrawElements(GL2.GL_TRIANGLE_STRIP, ri.indices.limit(), GL2.GL_UNSIGNED_INT, ri.indices.rewind());
 
             gl.glPopClientAttrib();
 
             dc.getView().popReferenceCenter(dc);
 
-            return indices.limit() - 2; // return number of triangles rendered
+            return ri.indices.limit() - 2; // return number of triangles rendered
         }
 
         public void renderWireframe(DrawContext dc, boolean showTriangles, boolean showTileBoundary)
@@ -640,111 +677,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         {
         }
 
-        public long getSizeInBytes()
-        {
-            return this.byteSize;
-        }
-
-        public int compareTo(SectorGeometry that)
-        {
-            if (that == null)
-            {
-                String msg = Logging.getMessage("nullValue.GeometryIsNull");
-                Logging.logger().severe(msg);
-                throw new IllegalArgumentException(msg);
-            }
-            return this.getSector().compareTo(that.getSector());
-        }
-
-        public boolean equals(Object o)
-        {
-            if (this == o)
-            {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass())
-            {
-                return false;
-            }
-
-            IcosaTile icosaTile = (IcosaTile) o;
-
-            if (density != icosaTile.density)
-            {
-                return false;
-            }
-            if (level != icosaTile.level)
-            {
-                return false;
-            }
-            if (g0 != null ? !g0.equals(icosaTile.g0) : icosaTile.g0 != null)
-            {
-                return false;
-            }
-            if (g1 != null ? !g1.equals(icosaTile.g1) : icosaTile.g1 != null)
-            {
-                return false;
-            }
-            if (g2 != null ? !g2.equals(icosaTile.g2) : icosaTile.g2 != null)
-            {
-                return false;
-            }
-            if (globeInfo != null ? !globeInfo.equals(icosaTile.globeInfo) : icosaTile.globeInfo != null)
-            {
-                return false;
-            }
-            if (p0 != null ? !p0.equals(icosaTile.p0) : icosaTile.p0 != null)
-            {
-                return false;
-            }
-            if (p1 != null ? !p1.equals(icosaTile.p1) : icosaTile.p1 != null)
-            {
-                return false;
-            }
-            if (p2 != null ? !p2.equals(icosaTile.p2) : icosaTile.p2 != null)
-            {
-                return false;
-            }
-            if (this.getSector() != null ? !this.getSector().equals(icosaTile.getSector())
-                    : icosaTile.getSector() != null)
-            {
-                return false;
-            }
-            if (unitp0 != null ? !unitp0.equals(icosaTile.unitp0) : icosaTile.unitp0 != null)
-            {
-                return false;
-            }
-            if (unitp1 != null ? !unitp1.equals(icosaTile.unitp1) : icosaTile.unitp1 != null)
-            {
-                return false;
-            }
-            //noinspection RedundantIfStatement
-            if (unitp2 != null ? !unitp2.equals(icosaTile.unitp2) : icosaTile.unitp2 != null)
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        public int hashCode()
-        {
-            int result;
-            result = level;
-            result = 31 * result + (globeInfo != null ? globeInfo.hashCode() : 0);
-            result = 31 * result + (g0 != null ? g0.hashCode() : 0);
-            result = 31 * result + (g1 != null ? g1.hashCode() : 0);
-            result = 31 * result + (g2 != null ? g2.hashCode() : 0);
-            result = 31 * result + (this.getSector().hashCode());
-            result = 31 * result + (unitp0 != null ? unitp0.hashCode() : 0);
-            result = 31 * result + (unitp1 != null ? unitp1.hashCode() : 0);
-            result = 31 * result + (unitp2 != null ? unitp2.hashCode() : 0);
-            result = 31 * result + (p0 != null ? p0.hashCode() : 0);
-            result = 31 * result + (p1 != null ? p1.hashCode() : 0);
-            result = 31 * result + (p2 != null ? p2.hashCode() : 0);
-            result = 31 * result + density;
-            return result;
-        }
     }
 
     // Angles used to form icosahedral triangles.
@@ -822,90 +754,30 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         // These lines form the level 0 icosahedral triangles. Two of the icosahedral triangles,
         // however, are split to form right triangles whose sides align with the longitude domain
         // limits (-180/180) so that no triangle spans the discontinuity between +180 and -180.
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[5], L0[7], L0[0]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[7], L0[9], L0[1]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[9], L0[11], L0[2]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[11], L0[13], L0[3]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[13], L0[15], L0[4]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[16], L0[7], L0[5]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[16], L0[18], L0[7]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[18], L0[9], L0[7]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[18], L0[20], L0[9]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[20], L0[11], L0[9])); // triangle centered on 0 lat, 0 lon
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[20], L0[22], L0[11]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[22], L0[13], L0[11]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[22], L0[24], L0[13]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[24], L0[15], L0[13]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[24], L0[25], L0[15])); // right triangle
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[33], L0[26], L0[32])); // right triangle
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[27], L0[18], L0[16]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[28], L0[20], L0[18]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[29], L0[22], L0[20]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[30], L0[24], L0[22]));
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[25], L0[24], L0[31])); // right triangle
-        topLevels.add(createTileFromAngles(globeInfo, 0, L0[26], L0[33], L0[34])); // right triangle
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[5], L0[7], L0[0])); // 1
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[7], L0[9], L0[1])); // 2
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[9], L0[11], L0[2]));    // 3
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[11], L0[13], L0[3]));   // 4
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[13], L0[15], L0[4]));   // 5
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[16], L0[7], L0[5]));    // 6
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[16], L0[18], L0[7]));   // 7
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[18], L0[9], L0[7]));    //8 
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[18], L0[20], L0[9]));   //9
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[20], L0[11], L0[9])); // 10 - triangle centered on 0 lat, 0 lon
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[20], L0[22], L0[11]));  // 11
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[22], L0[13], L0[11]));  // 12
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[22], L0[24], L0[13]));  // 13
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[24], L0[15], L0[13]));  // 14
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[24], L0[25], L0[15])); // 15 - right triangle
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[33], L0[26], L0[32])); // 16 - right triangle
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[27], L0[18], L0[16]));  // 17
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[28], L0[20], L0[18]));  // 18
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[29], L0[22], L0[20]));  // 19
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[30], L0[24], L0[22]));  // 20
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[25], L0[24], L0[31])); // 21 - right triangle
+        topLevels.add(createTileFromAngles(globeInfo, 0, L0[26], L0[33], L0[34])); // 22 - right triangle
 
         return topLevels;
-    }
-
-    private void printTopLevels(ArrayList<IcosaTile> tops)
-    {
-        if (tops.size() < 1)
-        {
-            return;
-        }
-
-        File fileToSave = new File("icosatile_output");
-        try ( PrintWriter writer = new PrintWriter(fileToSave))
-        {
-            StringBuilder sb = new StringBuilder();
-            for (int i = 0; i < tops.size(); i++)
-            {
-                sb.append(i).append(":");
-                sb.append("\n");
-                sb.append("Lat min: ").append(tops.get(i).sector.getMinLatitude()).append(" Lat max: ").append(tops.get(i).sector.getMaxLatitude());
-                sb.append("\n");
-                sb.append("Lon min: ").append(tops.get(i).sector.getMinLongitude()).append(" Lon max: ").append(tops.get(i).sector.getMaxLongitude());
-                sb.append("\n");
-                sb.append("\n");
-            }
-
-            writer.write(sb.toString());
-
-            System.out.println("File has been exported");
-        } catch (FileNotFoundException ex)
-        {
-            Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
-        }
-    }
-
-    private Globe globe;
-    private GlobeInfo globeInfo;
-    private java.util.ArrayList<IcosaTile> topLevels;
-    private SectorGeometryList currentTiles = new SectorGeometryList();
-    private Frustum currentFrustum;
-    private int currentLevel;
-    private int maxLevel = DEFAULT_MAX_LEVEL;//14; // TODO: Make configurable
-    private Sector sector; // union of all tiles selected during call to render()
-    private int density = DEFAULT_DENSITY; // TODO: make configurable
-    private boolean makeTileSkirts = true;
-
-    public IcoSphereTessellator()
-    {
-    }
-
-    public void setGlobe(Globe globe)
-    {
-        if (globe == null)
-        {
-            String msg = Logging.getMessage("nullValue.GlobeIsNull");
-            Logging.logger().severe(msg);
-            throw new IllegalArgumentException(msg);
-        }
-
-        this.globe = globe;
-        this.globeInfo = new GlobeInfo(this.globe);
-        this.topLevels = makeLevelZeroEquilateralTriangles(this.globeInfo);
     }
 
     public Sector getSector()
@@ -943,6 +815,7 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         dc.setVisibleSector(this.getSector());
 
         printTopLevels(topLevels);
+        printIcosaTileCoordinates();
         return this.currentTiles;
     }
 
@@ -1026,7 +899,6 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
         public String toString()
         {
             return "density " + this.density + " ve " + this.verticalExaggeration + " resolution " + this.resolution;
-//                + " g0 " + this.g0 + " g1 " + this.g1 + " g2 " + this.g2;
         }
 
         public boolean equals(Object o)
@@ -1146,4 +1018,176 @@ public class IcoSphereTessellator //extends WWObjectImpl implements Tessellator
 
         textureCoords.put(density, p);
     }
+
+    protected static void createIndices(int density)
+    {
+        int indexCount = density * density + 4 * density - 2;
+        IntBuffer buffer = Buffers.newDirectIntBuffer(indexCount);
+        int k = 0;
+        for (int i = 0; i < density; i++)
+        {
+            buffer.put(k);
+            if (i > 0)
+            {
+                k = buffer.get(buffer.position() - 3);
+                buffer.put(k);
+                buffer.put(k);
+            }
+
+            if (i % 2 == 0) // even
+            {
+                for (int j = 0; j < density - i; j++)
+                {
+                    ++k;
+                    buffer.put(k);
+                    k += density - j;
+                    buffer.put(k);
+                }
+            } else // odd
+            {
+                for (int j = density - i - 1; j >= 0; j--)
+                {
+                    k -= density - j;
+                    buffer.put(k);
+                    --k;
+                    buffer.put(k);
+                }
+            }
+        }
+
+        indexLists.put(density, buffer);
+    }
+
+    private void printTopLevels(ArrayList<IcosaTile> tops)
+    {
+        if (tops.size() < 1)
+        {
+            return;
+        }
+
+        File fileToSave = new File("icosatile_output");
+        try ( PrintWriter writer = new PrintWriter(fileToSave))
+        {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < tops.size(); i++)
+            {
+                sb.append(i).append(":");
+                sb.append("\n");
+                sb.append("Lat min: ").append(tops.get(i).sector.getMinLatitude()).append(" Lat max: ").append(tops.get(i).sector.getMaxLatitude());
+                sb.append("\n");
+                sb.append("Lon min: ").append(tops.get(i).sector.getMinLongitude()).append(" Lon max: ").append(tops.get(i).sector.getMaxLongitude());
+                sb.append("\n");
+                sb.append("\n");
+            }
+
+            writer.write(sb.toString());
+        } catch (FileNotFoundException ex)
+        {
+            Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+
+    // Function to print out all 22 triangle tiles
+    // Each triangle tile is made up of 3 points with latitude and longitude coordinates
+    private void printIcosaTileCoordinates()
+    {
+        File fileToSave = new File("triangle_coords");
+        try ( PrintWriter writer = new PrintWriter(fileToSave))
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Triangle 1 (lat, lon):\n ").append(L0[5].latitude.degrees).append("," + L0[5].longitude.degrees + "\n")
+                    .append(L0[7].latitude.degrees).append("," + L0[7].longitude.degrees + "\n")
+                    .append(L0[0].latitude.degrees).append("," + L0[0].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 2:\n ").append(L0[7].latitude.degrees).append("," + L0[7].longitude.degrees + "\n")
+                    .append(L0[9].latitude.degrees).append("," + L0[9].longitude.degrees + "\n")
+                    .append(L0[1].latitude.degrees).append("," + L0[1].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 3:\n ").append(L0[9].latitude.degrees).append("," + L0[9].longitude.degrees + "\n")
+                    .append(L0[11].latitude.degrees).append("," + L0[11].longitude.degrees + "\n")
+                    .append(L0[2].latitude.degrees).append("," + L0[2].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 4:\n ").append(L0[11].latitude.degrees).append("," + L0[11].longitude.degrees + "\n")
+                    .append(L0[13].latitude.degrees).append("," + L0[13].longitude.degrees + "\n")
+                    .append(L0[3].latitude.degrees).append("," + L0[3].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 5:\n ").append(L0[13].latitude.degrees).append("," + L0[13].longitude.degrees + "\n")
+                    .append(L0[15].latitude.degrees).append("," + L0[15].longitude.degrees + "\n")
+                    .append(L0[4].latitude.degrees).append("," + L0[4].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 6:\n ").append(L0[16].latitude.degrees).append("," + L0[16].longitude.degrees + "\n")
+                    .append(L0[7].latitude.degrees).append("," + L0[7].longitude.degrees + "\n")
+                    .append(L0[5].latitude.degrees).append("," + L0[5].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 7:\n ").append(L0[16].latitude.degrees).append("," + L0[16].longitude.degrees + "\n")
+                    .append(L0[18].latitude.degrees).append("," + L0[18].longitude.degrees + "\n")
+                    .append(L0[7].latitude.degrees).append("," + L0[7].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 8:\n ").append(L0[18].latitude.degrees).append("," + L0[18].longitude.degrees + "\n")
+                    .append(L0[9].latitude.degrees).append("," + L0[9].longitude.degrees + "\n")
+                    .append(L0[7].latitude.degrees).append("," + L0[7].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 9:\n ").append(L0[18].latitude.degrees).append("," + L0[18].longitude.degrees + "\n")
+                    .append(L0[20].latitude.degrees).append("," + L0[20].longitude.degrees + "\n")
+                    .append(L0[9].latitude.degrees).append("," + L0[9].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 10:\n ").append(L0[20].latitude.degrees).append("," + L0[20].longitude.degrees + "\n")
+                    .append(L0[11].latitude.degrees).append("," + L0[11].longitude.degrees + "\n")
+                    .append(L0[9].latitude.degrees).append("," + L0[9].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 11:\n ").append(L0[20].latitude.degrees).append("," + L0[20].longitude.degrees + "\n")
+                    .append(L0[22].latitude.degrees).append("," + L0[22].longitude.degrees + "\n")
+                    .append(L0[11].latitude.degrees).append("," + L0[11].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 12:\n ").append(L0[22].latitude.degrees).append("," + L0[22].longitude.degrees + "\n")
+                    .append(L0[13].latitude.degrees).append("," + L0[13].longitude.degrees + "\n")
+                    .append(L0[11].latitude.degrees).append("," + L0[11].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 13:\n ").append(L0[22].latitude.degrees).append("," + L0[22].longitude.degrees + "\n")
+                    .append(L0[24].latitude.degrees).append("," + L0[24].longitude.degrees + "\n")
+                    .append(L0[13].latitude.degrees).append("," + L0[13].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 14:\n ").append(L0[24].latitude.degrees).append("," + L0[24].longitude.degrees + "\n")
+                    .append(L0[15].latitude.degrees).append("," + L0[15].longitude.degrees + "\n")
+                    .append(L0[13].latitude.degrees).append("," + L0[13].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 15:\n ").append(L0[24].latitude.degrees).append("," + L0[24].longitude.degrees + "\n")
+                    .append(L0[25].latitude.degrees).append("," + L0[25].longitude.degrees + "\n")
+                    .append(L0[15].latitude.degrees).append("," + L0[15].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 16:\n ").append(L0[33].latitude.degrees).append("," + L0[33].longitude.degrees + "\n")
+                    .append(L0[26].latitude.degrees).append("," + L0[26].longitude.degrees + "\n")
+                    .append(L0[32].latitude.degrees).append("," + L0[32].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 17:\n ").append(L0[27].latitude.degrees).append("," + L0[27].longitude.degrees + "\n")
+                    .append(L0[18].latitude.degrees).append("," + L0[18].longitude.degrees + "\n")
+                    .append(L0[16].latitude.degrees).append("," + L0[16].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 18:\n ").append(L0[28].latitude.degrees).append("," + L0[28].longitude.degrees + "\n")
+                    .append(L0[20].latitude.degrees).append("," + L0[20].longitude.degrees + "\n")
+                    .append(L0[18].latitude.degrees).append("," + L0[18].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 19:\n ").append(L0[29].latitude.degrees).append("," + L0[29].longitude.degrees + "\n")
+                    .append(L0[22].latitude.degrees).append("," + L0[22].longitude.degrees + "\n")
+                    .append(L0[20].latitude.degrees).append("," + L0[20].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 20:\n ").append(L0[30].latitude.degrees).append("," + L0[30].longitude.degrees + "\n")
+                    .append(L0[24].latitude.degrees).append("," + L0[24].longitude.degrees + "\n")
+                    .append(L0[22].latitude.degrees).append("," + L0[22].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 21:\n ").append(L0[25].latitude.degrees).append("," + L0[25].longitude.degrees + "\n")
+                    .append(L0[24].latitude.degrees).append("," + L0[24].longitude.degrees + "\n")
+                    .append(L0[31].latitude.degrees).append("," + L0[31].longitude.degrees + "\n\n");
+
+            sb.append("Triangle 22:\n ").append(L0[26].latitude.degrees).append("," + L0[26].longitude.degrees + "\n")
+                    .append(L0[33].latitude.degrees).append("," + L0[33].longitude.degrees + "\n")
+                    .append(L0[34].latitude.degrees).append("," + L0[34].longitude.degrees + "\n\n");
+
+            writer.write(sb.toString());
+        } catch (FileNotFoundException ex)
+        {
+            Logger.getLogger(IcoSphereTessellator.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+
 }
