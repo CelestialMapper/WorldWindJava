@@ -1,7 +1,29 @@
 /*
- * Copyright (C) 2012 United States Government as represented by the Administrator of the
- * National Aeronautics and Space Administration.
- * All Rights Reserved.
+ * Copyright 2006-2009, 2017, 2020 United States Government, as represented by the
+ * Administrator of the National Aeronautics and Space Administration.
+ * All rights reserved.
+ * 
+ * The NASA World Wind Java (WWJ) platform is licensed under the Apache License,
+ * Version 2.0 (the "License"); you may not use this file except in compliance
+ * with the License. You may obtain a copy of the License at
+ * http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing, software distributed
+ * under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+ * CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ * 
+ * NASA World Wind Java (WWJ) also contains the following 3rd party Open Source
+ * software:
+ * 
+ *     Jackson Parser – Licensed under Apache 2.0
+ *     GDAL – Licensed under MIT
+ *     JOGL – Licensed under  Berkeley Software Distribution (BSD)
+ *     Gluegen – Licensed under Berkeley Software Distribution (BSD)
+ * 
+ * A complete listing of 3rd Party software notices and licenses included in
+ * NASA World Wind Java (WWJ)  can be found in the WorldWindJava-v2.2 3rd-party
+ * notices and licenses PDF found in code directory.
  */
 package gov.nasa.worldwind.globes;
 
@@ -33,7 +55,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
     protected final double es;
     private final Vec4 center;
     private ElevationModel elevationModel;
-    private IcoSphereTessellator tessellator;
+    private Tessellator tessellator;
     protected EGM96 egm96;
 
     /**
@@ -52,7 +74,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         this.es = es; // assume it's consistent with the two radii
         this.center = Vec4.ZERO;
         this.elevationModel = em;
-        this.tessellator = new IcoSphereTessellator();
+        this.tessellator = (Tessellator) WorldWind.createConfigurationComponent(AVKey.TESSELLATOR_CLASS_NAME);
     }
 
     /**
@@ -72,13 +94,13 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         this.es = es; // assume it's consistent with the two radii
         this.center = center;
         this.elevationModel = em;
-        this.tessellator =  new IcoSphereTessellator();
+        this.tessellator = (Tessellator) WorldWind.createConfigurationComponent(AVKey.TESSELLATOR_CLASS_NAME);
     }
 
     protected class StateKey implements GlobeStateKey
     {
         protected Globe globe;
-        protected final IcoSphereTessellator tessellator;
+        protected final Tessellator tessellator;
         protected double verticalExaggeration;
         protected ElevationModel elevationModel;
 
@@ -92,8 +114,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
             }
 
             this.globe = dc.getGlobe();
-           
-            this.tessellator = new IcoSphereTessellator();
+            this.tessellator = EllipsoidalGlobe.this.tessellator;
             this.verticalExaggeration = dc.getVerticalExaggeration();
             this.elevationModel = this.globe.getElevationModel();
         }
@@ -101,7 +122,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         public StateKey(Globe globe)
         {
             this.globe = globe;
-            this.tessellator = new IcoSphereTessellator();
+            this.tessellator = EllipsoidalGlobe.this.tessellator;
             this.verticalExaggeration = 1;
             this.elevationModel = this.globe.getElevationModel();
         }
@@ -164,12 +185,12 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
         return new StateKey(this);
     }
 
-    public IcoSphereTessellator getTessellator()
+    public Tessellator getTessellator()
     {
         return tessellator;
     }
 
-    public void setTessellator(IcoSphereTessellator tessellator)
+    public void setTessellator(Tessellator tessellator)
     {
         this.tessellator = tessellator;
     }
@@ -1297,7 +1318,7 @@ public class EllipsoidalGlobe extends WWObjectImpl implements Globe
     {
         if (this.tessellator == null)
         {
-            this.tessellator = new IcoSphereTessellator();
+            this.tessellator = (Tessellator) WorldWind.createConfigurationComponent(AVKey.TESSELLATOR_CLASS_NAME);
 
             if (this.tessellator == null)
             {
